@@ -13,6 +13,11 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", default="3.11")
+    parser.add_argument(
+        "--minimum-tests",
+        action="store_true",
+        help="also run the suite on wheels with minimum runtime dependencies",
+    )
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     directory = root / "dist"
@@ -62,6 +67,20 @@ def main() -> None:
             ],
             check=True,
         )
+
+    if args.minimum_tests:
+        command = ["uv", "run", "--no-project", "--isolated", "--python", args.python]
+        requirements = [str(wheel) for wheel in wheels] + [
+            "anyio==4.4.0",
+            "transitions==0.9.2",
+            "pytest>=8,<10",
+            "trio>=0.27,<1",
+            "pyyaml>=6,<7",
+        ]
+        for requirement in requirements:
+            command.extend(("--with", requirement))
+        command.extend(("python", "-m", "pytest", str(root / "tests"), "-q"))
+        subprocess.run(command, cwd=root, check=True)
 
 
 if __name__ == "__main__":

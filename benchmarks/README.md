@@ -23,5 +23,9 @@ Async batches include event-loop construction and shutdown; their throughput is
 **batches per second**, not tasks/items per second. Callback cost, source size,
 dependency graph depth, observer work and actual I/O affect application performance.
 Use identical interpreters, dependencies, hardware and workloads for comparisons.
-The recorded JSON is one local Windows/Python run, not a performance promise or a
-comparison against the upstream libraries or their Rust/Go counterparts.
+`baseline-windows-py313.json` records the initial implementation;
+`expanded-windows-py313.json` records the expanded upstream APIs and managed features.
+Both contain local Windows/Python measurements, not performance promises or
+comparisons against upstream libraries or their Rust/Go counterparts. These runs
+were taken at different times without controlling machine load; small differences
+should not be interpreted as statistically established regressions or improvements.

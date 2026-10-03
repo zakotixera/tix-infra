@@ -3,6 +3,31 @@
 Reusable state machine definitions backed by `transitions`. Python 3.11+. The sync
 manager uses `Machine`; the async manager uses the upstream asyncio extension.
 
+The full native API is also available: `Machine`, `AsyncMachine`, `HierarchicalMachine`,
+`HierarchicalAsyncMachine`, locked/graph variants, `MachineFactory`, `MachineError`,
+`EventData`, `NativeState`, `NativeTransition` and `NativeEvent` are upstream classes.
+Exported `native` and `extensions` modules provide the complete installed-version API.
+
+```python
+from tix_transition import HierarchicalMachine
+
+machine = HierarchicalMachine(
+    states=["idle", {"name": "work", "children": ["ready", "done"], "initial": "ready"}],
+    initial="idle",
+    queued=True,
+    transitions=[["begin", "idle", "work"], ["finish", "work_ready", "work_done"]],
+)
+machine.begin()
+machine.finish()
+assert machine.state == "work_done"
+```
+
+Native classes retain enum states, nested/parallel states, automatic and queued
+transitions, generated model methods, string callbacks, multi-model `dispatch`,
+`add_model` / `remove_model`, dynamic/ordered transitions, inspection, subclassing,
+graph generation and constructor options. Renderers retain upstream optional
+dependencies. The typed manager policies below do not alter exported native classes.
+
 ```python
 from tix_transition import MachineDefinition, State, Transition, TransitionManager
 
@@ -38,21 +63,55 @@ from being injected into application objects.
 `Transition` has an event name, one source or a tuple of sources, a target and ordered
 `guards`, `before` and `after` callbacks. `source="*"` expands to every non-final
 state. `target=None` is an internal transition: before/after run without exit/entry.
-A transition to the current state exits and re-enters it. Repeated event/source
+A transition to the current state or `target="="` exits and re-enters it. Repeated event/source
 definitions form ordered guarded alternatives; the first accepted transition wins.
 
-Every callback receives an `Event` containing its name, source, application context
-and payload. The payload mapping is copied and read-only; nested values and context
-are borrowed application objects, not recursively frozen. Guards short-circuit in
-definition order. Callback phases are guards -> before -> exit -> state update ->
-enter -> after. Initial construction and checkpoint restoration do not run entry
-callbacks. Final states reject outgoing transitions.
+Callbacks receive an `Event` containing its name, original source, context, positional
+`args` and keyword `payload` (also `kwargs`). Transition callbacks additionally receive
+the selected `target`, current `state` and backend result/error fields. The payload
+mapping is copied and read-only; nested values/context remain borrowed application
+objects. String callbacks resolve against context attributes or mapping keys, including
+dotted paths (`conditions=("policy.allowed",)`). Callables receive the event;
+non-callable attributes act as condition values. Managed resolution does not import
+arbitrary dotted paths; native machines retain upstream callable resolution.
+
+`conditions` extends `guards`; all must pass. `unless` conditions must be false.
+Successful dispatch follows: `prepare_event` -> transition `prepare` -> guards,
+conditions and unless -> `before_state_change` -> transition `before` -> exit ->
+state update -> enter -> `on_final` (if terminal) -> transition `after` ->
+`after_state_change` -> `finalize_event`. Machine hooks are tuples on
+`MachineDefinition`. Initial construction/restore do not run entry callbacks.
+
+`on_exception` and `finalize_event` receive completion events with resulting state,
+acceptance and the original exception. Managed hooks observe failures without
+suppressing them. Ordinary hook failures are aggregated with the dispatch failure,
+and history/observers still receive a record. Async hooks honor ambient cancellation
+without implicit shielding; cancelled hooks may prevent later hooks from running,
+but cancellation is recorded and propagated. Earlier hook failures and observer
+failures are preserved alongside cancellation in a `BaseExceptionGroup`; cancellation
+alone remains a native `CancelledError`. Native machines retain upstream error
+suppression/finalization behavior. Final states reject outgoing transitions.
 
 Definition errors are rejected before backend construction. Structural
 `available_events()` does not run guards and therefore does not promise acceptance.
 `InvalidEvent` means the event is unknown/unavailable from the current state; it is
 rejected before dispatch/history. A valid event rejected by guards returns a record
 with `accepted=False`.
+
+`trigger(name, *args, **payload)` returns a boolean like upstream; `dispatch` returns
+the richer record. `may_trigger` runs upstream preparation/conditions without changing
+state or history and returns false for unavailable events. These callbacks can have
+application side effects, so it is not a pure availability query. Guard queries do
+not run managed completion hooks.
+
+`states`, `get_state`, `is_state`, `get_triggers(*states)` and
+`get_transitions(trigger="*", source="*", dest="*")` expose inspection. Returned
+states/transitions are immutable definitions. `dest=None` filters internal transitions.
+`add_states(*states)`, `add_transition(Transition(...))` and
+`remove_transition(trigger, source="*", dest="*")` validate and rebuild atomically
+while retaining current state, context and history. Partial source removal preserves
+the other sources; edits affect only that manager. Rebuilds are control-plane
+operations. Wildcard definitions include newly added non-final states when rebuilt.
 
 ## Async and concurrency
 
@@ -78,6 +137,8 @@ Individual state reads are observational; external readers may see a state updat
 before post-transition callbacks finish. Share a manager through dispatch and its
 returned record when completion matters.
 
+Async `trigger`, `may_trigger`, structural edits and `restore` must be awaited.
+
 ## Diagnostics and persistence boundaries
 
 `TransitionRecord` contains sequence, event, source, resulting state, acceptance,
@@ -98,7 +159,10 @@ side effects, sequence and history are not replayed. Serialize with
 `dataclasses.asdict` and construct `Checkpoint(**data)` on load. Definition identity
 and version are explicit application contracts: bump versions when compatibility
 changes. This is not durable workflow execution or transactional event storage.
+Structural edits do not automatically bump the explicit version; version your schema
+before exchanging checkpoints across changed definitions.
 
-`definition.mermaid()` exports a flat state diagram without Graphviz. Typed
-hierarchical/parallel statecharts and persistent event queues are future adapters;
-the initial API deliberately describes flat finite-state machines.
+`definition.mermaid()` exports a flat state diagram without Graphviz. Managed
+definitions describe flat FSMs. Native hierarchical/parallel statecharts and queues
+are available through the exported upstream classes; they do not automatically carry
+managed history and serialization guarantees.

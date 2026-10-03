@@ -10,6 +10,12 @@ tooling, not runtime state or cross-package dependencies.
 | [tix-transition](tix-transition/README.md) / `tix_transition` | Validated reusable FSM definitions, sync/async execution, checkpoints | transitions, AnyIO |
 | [tix-lifecycle](tix-lifecycle/README.md) / `tix_lifecycle` | Dependency graph startup, rollback, release, health and process adapters | AnyIO |
 
+Async and transition packages expose both native upstream APIs and enhanced managers.
+Native machine variants retain hierarchy, parallel states, queues and multi-model
+features. AnyIO/asyncio objects keep their original semantics; managed additions
+provide bounded tasks, readiness, streaming, validated FSM edits and richer callbacks.
+See [upstream compatibility](docs/upstream-compatibility.md).
+
 Read the [architecture plan and reference research](docs/architecture.md) for the
 contracts, inspiration from Python/Rust/Go libraries, extension boundaries and
 deliberately deferred features. The initial repository had empty package directories;
@@ -26,6 +32,7 @@ uv run python scripts/typecheck.py
 uv build --all-packages
 uv run python scripts/check_wheels.py
 uv run python examples/service.py
+uv run python examples/upstream_apis.py
 ```
 
 `uv.lock` records the shared dependency resolution. Each package has its own build

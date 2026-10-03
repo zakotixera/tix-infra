@@ -65,8 +65,17 @@ immutable candidate -> validation -> atomic publication -> change notification.
 - Result handles support explicit cancellation and bounded waits. Completed task
   handles leave manager ownership immediately; only callers retain results.
   Fail-fast is default; collect mode exposes failures through handles and counters.
+- Expose real AnyIO/asyncio modules and common native APIs without semantic rewrites.
+  Shared names select AnyIO; asyncio-specific APIs retain their backend restriction.
+  Bounded `start_soon`, readiness `start`, awaitable handles, `wait_idle`, `close` and
+  native cancel-scope access extend managed task ownership.
 - `map_concurrent` uses a fixed worker pool and a bounded memory stream, preserves
   input order, and cancels siblings on error. Results necessarily take O(n) memory.
+- `map_unordered` streams completion-order results from sync or async inputs with
+  fixed workers and bounded input/output buffers; consumer context exit cancels and
+  joins remaining work. It does not build a growing result list.
+  Ordered mapping writes directly into its result list; it avoids the output channel
+  needed for streaming. Both use native AnyIO task groups and memory streams.
 - `RetryPolicy` provides capped exponential backoff, optional full jitter, explicit
   retry predicates, per-attempt and total timeouts, and injectable sleep/random.
   Cancellation is never retried.
@@ -76,7 +85,7 @@ immutable candidate -> validation -> atomic publication -> change notification.
   followers with an explicit failure. Recursive use of the same key is rejected.
 - Periodic work uses monotonic fixed-rate scheduling, skips missed ticks, and
   supports cooperative stopping. Exceptions propagate to the owning task group.
-- All primitives work on AnyIO asyncio and Trio backends and are event-loop-local.
+- Managed primitives work on AnyIO asyncio and Trio backends and are event-loop-local.
   Thread work uses AnyIO's existing `to_thread` APIs; no competing executor layer.
 
 ## tix-transition
@@ -97,8 +106,15 @@ immutable candidate -> validation -> atomic publication -> change notification.
 - Optional bounded history and observers, immutable records, versioned snapshot
   restore, and Mermaid export are independent of business logic. Definitions
   carry explicit version identifiers; restore validates them before changing state.
-- Native hierarchical/parallel statecharts are a future adapter, not a second
-  handwritten FSM engine. Initial typed definitions deliberately describe flat FSMs.
+- Export upstream native Machine variants, module namespaces and MachineFactory for
+  hierarchy, parallel regions, enums, queues, generated methods, dynamic modeling,
+  multiple models, locking and diagrams without removing upstream options.
+  Native exports are direct imports in each package entry point, with no proxy classes
+  or extra forwarding modules.
+- Typed managers support conditions/unless/prepare, global hooks, reflexive targets,
+  context callback names, guard queries, inspection and serialized structural edits.
+  Typed definitions describe flat FSMs. Contracts for each layer are documented in
+  [upstream compatibility](upstream-compatibility.md).
 
 ## tix-lifecycle
 

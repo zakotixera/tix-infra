@@ -29,3 +29,6 @@ jobs:
       - run: uv run python examples/service.py
       - run: uv build --all-packages
       - run: uv run python scripts/check_wheels.py --python ${{ matrix.python }}
+      - if: matrix.python == '3.11'
+        run: uv run python scripts/check_wheels.py --python 3.11 --minimum-tests
+      - run: uv run python examples/upstream_apis.py

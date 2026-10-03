@@ -1,128 +1,22 @@
-"""Serialized dispatch, bounded diagnostics, and explicit state restoration."""
+"""Serialized sync and async manager entry points."""
 
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from collections.abc import Callable, Iterable
-from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import replace
 from threading import RLock
 from time import perf_counter
 from typing import Any
 
 import anyio
 
-from .backend import build_backend
-from .definition import Event, MachineDefinition
-
-_DISPATCHING: ContextVar[frozenset[int]] = ContextVar("tix_dispatching", default=frozenset())
-
-
-class InvalidEvent(ValueError):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class TransitionRecord:
-    sequence: int
-    event: str
-    source: str
-    target: str
-    accepted: bool
-    duration: float
-    error_type: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class Checkpoint:
-    definition: str
-    version: str
-    state: str
-
-
-class _Manager:
-    def __init__(
-        self,
-        definition: MachineDefinition,
-        *,
-        asynchronous: bool,
-        context: Any = None,
-        history_limit: int = 0,
-        observers: Iterable[Callable[[TransitionRecord], object]] = (),
-    ) -> None:
-        if history_limit < 0:
-            raise ValueError("history_limit must be nonnegative")
-        self.definition = definition
-        self.context = context
-        self._machine, self._model = build_backend(definition, asynchronous=asynchronous)
-        self._history: deque[TransitionRecord] = deque(maxlen=history_limit)
-        self._observers = tuple(observers)
-        self._sequence = 0
-
-    @property
-    def state(self) -> str:
-        return str(self._model._tix_state)
-
-    @property
-    def is_final(self) -> bool:
-        return bool(self._machine.get_state(self.state).final)
-
-    @property
-    def history(self) -> tuple[TransitionRecord, ...]:
-        return tuple(self._history)
-
-    def available_events(self) -> tuple[str, ...]:
-        """Structural availability only; does not run side-effecting guards."""
-        return tuple(self._machine.get_triggers(self.state))
-
-    def checkpoint(self) -> Checkpoint:
-        return Checkpoint(self.definition.name, self.definition.version, self.state)
-
-    def _restore(self, checkpoint: Checkpoint) -> None:
-        if (checkpoint.definition, checkpoint.version) != (
-            self.definition.name,
-            self.definition.version,
-        ):
-            raise ValueError("checkpoint definition/version mismatch")
-        if checkpoint.state not in self._machine.states:
-            raise ValueError("checkpoint state is not defined")
-        self._machine.set_state(checkpoint.state, model=self._model)
-
-    def _check_reentrant(self) -> None:
-        if id(self) in _DISPATCHING.get():
-            raise RuntimeError("reentrant dispatch or restore from a callback")
-
-    def _event(self, name: str, payload: dict[str, Any]) -> Event:
-        backend_event = self._machine.events.get(name)
-        if backend_event is None or self.state not in backend_event.transitions:
-            raise InvalidEvent(f"event {name!r} is unavailable from {self.state!r}")
-        return Event(name, self.state, self.context, payload)
-
-    def _finish(
-        self, event: Event, accepted: bool, started: float, failure: BaseException | None
-    ) -> TransitionRecord:
-        self._sequence += 1
-        record = TransitionRecord(
-            self._sequence,
-            event.name,
-            event.source,
-            self.state,
-            accepted,
-            perf_counter() - started,
-            type(failure).__name__ if failure else None,
-        )
-        self._history.append(record)
-        observer_errors: list[Exception] = []
-        for observer in self._observers:
-            try:
-                observer(record)
-            except Exception as error:
-                observer_errors.append(error)
-        if observer_errors:
-            errors = ([failure] if failure else []) + observer_errors
-            raise BaseExceptionGroup("dispatch completed; observers failed", errors)
-        return record
+from .callbacks import complete_async, complete_sync
+from .core import _DISPATCHING, _Manager
+from .core import Checkpoint as Checkpoint
+from .core import InvalidEvent as InvalidEvent
+from .core import TransitionRecord as TransitionRecord
+from .definition import MachineDefinition, State, Transition
 
 
 class TransitionManager(_Manager):
@@ -143,23 +37,60 @@ class TransitionManager(_Manager):
         )
         self._lock = RLock()
 
-    def dispatch(self, name: str, **payload: Any) -> TransitionRecord:
+    def dispatch(self, name: str, *args: Any, **payload: Any) -> TransitionRecord:
         self._check_reentrant()
         with self._lock:
-            event = self._event(name, payload)
+            event = self._event(name, payload, args)
             token = _DISPATCHING.set(_DISPATCHING.get() | {id(self)})
-            started, accepted, failure = perf_counter(), False, None
+            started, accepted = perf_counter(), False
+            failure: BaseException | None = None
             try:
-                accepted = bool(self._machine.events[name].trigger(self._model, _tix_event=event))
-            except BaseException as error:
-                failure = error
-                raise
-            finally:
                 try:
-                    record = self._finish(event, accepted, started, failure)
-                finally:
-                    _DISPATCHING.reset(token)
-            return record
+                    accepted = bool(
+                        self._machine.events[name].trigger(self._model, _tix_event=event)
+                    )
+                except BaseException as error:
+                    failure = error
+                errors: list[BaseException] = []
+                if self.definition.finalize_event or (
+                    failure is not None and self.definition.on_exception
+                ):
+                    completion = replace(event, state=self.state, result=accepted, error=failure)
+                    errors = complete_sync(self.definition, completion)
+                return self._finish(event, accepted, started, failure, errors)
+            finally:
+                _DISPATCHING.reset(token)
+
+    def trigger(self, name: str, *args: Any, **payload: Any) -> bool:
+        return self.dispatch(name, *args, **payload).accepted
+
+    def may_trigger(self, name: str, *args: Any, **payload: Any) -> bool:
+        """Run upstream preparation and guards without changing state or history."""
+        self._check_reentrant()
+        with self._lock:
+            if name not in self.available_events():
+                return False
+            event = self._event(name, payload, args)
+            token = _DISPATCHING.set(_DISPATCHING.get() | {id(self)})
+            try:
+                return bool(self._model.may_trigger(name, _tix_event=event))
+            finally:
+                _DISPATCHING.reset(token)
+
+    def add_states(self, *states: State) -> None:
+        self._check_reentrant()
+        with self._lock:
+            self._add_states(states)
+
+    def add_transition(self, transition: Transition) -> None:
+        self._check_reentrant()
+        with self._lock:
+            self._add_transition(transition)
+
+    def remove_transition(self, trigger: str, source: str = "*", dest: str | None = "*") -> None:
+        self._check_reentrant()
+        with self._lock:
+            self._remove_transition(trigger, source, dest)
 
     def restore(self, checkpoint: Checkpoint) -> None:
         """Restore state only: no callbacks, external effects, or history replay."""
@@ -188,26 +119,63 @@ class AsyncTransitionManager(_Manager):
         )
         self._lock = anyio.Lock()
 
-    async def dispatch(self, name: str, **payload: Any) -> TransitionRecord:
+    async def dispatch(self, name: str, *args: Any, **payload: Any) -> TransitionRecord:
         asyncio.get_running_loop()
         self._check_reentrant()
         async with self._lock:
-            event = self._event(name, payload)
+            event = self._event(name, payload, args)
             token = _DISPATCHING.set(_DISPATCHING.get() | {id(self)})
-            started, accepted, failure = perf_counter(), False, None
+            started, accepted = perf_counter(), False
+            failure: BaseException | None = None
             try:
-                accepted = bool(
-                    await self._machine.events[name].trigger(self._model, _tix_event=event)
-                )
-            except BaseException as error:
-                failure = error
-                raise
-            finally:
                 try:
-                    record = self._finish(event, accepted, started, failure)
-                finally:
-                    _DISPATCHING.reset(token)
-            return record
+                    accepted = bool(
+                        await self._machine.events[name].trigger(self._model, _tix_event=event)
+                    )
+                except BaseException as error:
+                    failure = error
+                errors: list[BaseException] = []
+                if self.definition.finalize_event or (
+                    failure is not None and self.definition.on_exception
+                ):
+                    completion = replace(event, state=self.state, result=accepted, error=failure)
+                    errors = await complete_async(self.definition, completion)
+                return self._finish(event, accepted, started, failure, errors)
+            finally:
+                _DISPATCHING.reset(token)
+
+    async def trigger(self, name: str, *args: Any, **payload: Any) -> bool:
+        return (await self.dispatch(name, *args, **payload)).accepted
+
+    async def may_trigger(self, name: str, *args: Any, **payload: Any) -> bool:
+        asyncio.get_running_loop()
+        self._check_reentrant()
+        async with self._lock:
+            if name not in self.available_events():
+                return False
+            event = self._event(name, payload, args)
+            token = _DISPATCHING.set(_DISPATCHING.get() | {id(self)})
+            try:
+                return bool(await self._model.may_trigger(name, _tix_event=event))
+            finally:
+                _DISPATCHING.reset(token)
+
+    async def add_states(self, *states: State) -> None:
+        self._check_reentrant()
+        async with self._lock:
+            self._add_states(states)
+
+    async def add_transition(self, transition: Transition) -> None:
+        self._check_reentrant()
+        async with self._lock:
+            self._add_transition(transition)
+
+    async def remove_transition(
+        self, trigger: str, source: str = "*", dest: str | None = "*"
+    ) -> None:
+        self._check_reentrant()
+        async with self._lock:
+            self._remove_transition(trigger, source, dest)
 
     async def restore(self, checkpoint: Checkpoint) -> None:
         asyncio.get_running_loop()

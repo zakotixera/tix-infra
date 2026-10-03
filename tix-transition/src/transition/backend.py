@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Awaitable, Callable, Iterable
 from types import SimpleNamespace
 from typing import Any, cast
@@ -10,6 +9,7 @@ from typing import Any, cast
 from transitions import Machine
 from transitions.extensions.asyncio import AsyncMachine, AsyncTransition
 
+from .callbacks import adapt_event, invoke_async, invoke_sync
 from .definition import Callback, MachineDefinition
 
 
@@ -38,20 +38,14 @@ class _SerialAsyncMachine(AsyncMachine):
 
 def _sync(callback: Callback) -> Callable[[Any], Any]:
     def invoke(data: Any) -> Any:
-        result = callback(data.kwargs["_tix_event"])
-        if inspect.isawaitable(result):
-            if inspect.iscoroutine(result):
-                result.close()
-            raise TypeError("async callbacks require AsyncTransitionManager")
-        return result
+        return invoke_sync(callback, adapt_event(data))
 
     return invoke
 
 
 def _async(callback: Callback) -> Callable[[Any], Awaitable[Any]]:
     async def invoke(data: Any) -> Any:
-        result = callback(data.kwargs["_tix_event"])
-        return await result if inspect.isawaitable(result) else result
+        return await invoke_async(callback, adapt_event(data))
 
     return invoke
 
@@ -72,14 +66,19 @@ def build_backend(definition: MachineDefinition, *, asynchronous: bool) -> tuple
             "trigger": transition.event,
             "source": list(definition.sources(transition)),
             "dest": transition.target,
-            "conditions": [adapt(callback) for callback in transition.guards],
+            "conditions": [
+                adapt(callback) for callback in (*transition.guards, *transition.conditions)
+            ],
+            "unless": [adapt(callback) for callback in transition.unless],
+            "prepare": [adapt(callback) for callback in transition.prepare],
             "before": [adapt(callback) for callback in transition.before],
             "after": [adapt(callback) for callback in transition.after],
         }
         for transition in definition.transitions
     ]
     model = SimpleNamespace()
-    factory = _SerialAsyncMachine if asynchronous else Machine
+    # Upstream's async extension inherits synchronous constructor annotations.
+    factory: Any = _SerialAsyncMachine if asynchronous else Machine
     machine = factory(
         model=model,
         states=states,
@@ -90,5 +89,9 @@ def build_backend(definition: MachineDefinition, *, asynchronous: bool) -> tuple
         queued=False,
         ignore_invalid_triggers=False,
         model_attribute="_tix_state",
+        prepare_event=[adapt(callback) for callback in definition.prepare_event],
+        before_state_change=[adapt(callback) for callback in definition.before_state_change],
+        after_state_change=[adapt(callback) for callback in definition.after_state_change],
+        on_final=[adapt(callback) for callback in definition.on_final],
     )
     return machine, model
