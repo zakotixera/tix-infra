@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tix-transition"
+version = "0.1.0"
+description = "Reusable validated state machines backed by transitions"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["transitions>=0.9.2,<1", "anyio>=4.4,<5"]
+
+[tool.setuptools]
+packages = ["tix_transition"]
+package-dir = { tix_transition = "src/transition" }
+
+[tool.setuptools.package-data]
+tix_transition = ["py.typed"]

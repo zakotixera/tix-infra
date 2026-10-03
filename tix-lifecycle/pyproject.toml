@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tix-lifecycle"
+version = "0.1.0"
+description = "Dependency-aware application lifecycle and resource ownership"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["anyio>=4.4,<5"]
+
+[tool.setuptools]
+packages = ["tix_lifecycle"]
+package-dir = { tix_lifecycle = "src/lifecycle" }
+
+[tool.setuptools.package-data]
+tix_lifecycle = ["py.typed"]

@@ -1,0 +1,52 @@
+{
+  "environment": {
+    "python": "3.13.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 26 Model 68 Stepping 0, AuthenticAMD",
+    "repeats": 5,
+    "iterations": 10000,
+    "backend": "asyncio"
+  },
+  "snapshot_lookup": {
+    "median_seconds": 7.229199982248247e-07,
+    "operations_per_second": 1383278.9277590364,
+    "min_seconds": 6.369700015056878e-07,
+    "max_seconds": 7.989600009750575e-07
+  },
+  "manager_snapshot_lookup": {
+    "median_seconds": 8.063899993430823e-07,
+    "operations_per_second": 1240094.7442486144,
+    "min_seconds": 7.673499989323318e-07,
+    "max_seconds": 9.297400014474989e-07
+  },
+  "config_reload_1000_values": {
+    "median_seconds": 0.00045795799989718945,
+    "operations_per_second": 2183.606357405041,
+    "min_seconds": 0.00044651600008364765,
+    "max_seconds": 0.000472474999842234
+  },
+  "internal_transition": {
+    "median_seconds": 3.485039999941364e-06,
+    "operations_per_second": 286940.75247825705,
+    "min_seconds": 3.4305899986065922e-06,
+    "max_seconds": 3.5626200027763844e-06
+  },
+  "task_batch_1000": {
+    "median_seconds": 0.015086899977177382,
+    "operations_per_second": 66.28266917078685,
+    "min_seconds": 0.01376559998607263,
+    "max_seconds": 0.015684699988923967
+  },
+  "map_batch_1000": {
+    "median_seconds": 0.008305499970447272,
+    "operations_per_second": 120.40214358656453,
+    "min_seconds": 0.008238099981099367,
+    "max_seconds": 0.008480000018607825
+  },
+  "lifecycle_100_components": {
+    "median_seconds": 0.0014059999957680702,
+    "operations_per_second": 711.2375554835756,
+    "min_seconds": 0.0013679999974556267,
+    "max_seconds": 0.001677399966865778
+  }
+}
