@@ -108,12 +108,20 @@ fixed worker count and bounded input stream, accepts lazy iterables, and returns
 results in input order. Failure cancels siblings. The result list necessarily uses
 O(n) memory; this is not an unbounded streaming-result API. Blocking iterator work and
 blocking callbacks must be offloaded by the application.
+Input iteration runs in one owned producer task alongside the fixed worker pool.
 
 `map_unordered(operation, items, concurrency=32, buffer_size=0)` supplies a bounded
 completion-order result stream in an async context manager. Inputs may be synchronous
 or asynchronous iterables. Both input and output buffers are bounded independently;
 memory is O(concurrency + buffer_size), excluding resources retained by your iterator,
 operation or consumer. Exiting early cancels and joins workers and the producer.
+
+Both mapping APIs treat independently cancelled operations or input iterators as
+`TaskCancelled` failures, reported through the task group's exception group. For
+example, awaiting an already-cancelled asyncio Future must not silently drop an
+input or return an unfinished result. Cancellation of the mapping's caller retains
+native cancellation semantics; early streaming exit still cancels and joins work.
+This includes native asyncio `timeout`, `wait_for` and direct caller `Task.cancel()`.
 
 ```python
 from tix_asyncio import map_unordered

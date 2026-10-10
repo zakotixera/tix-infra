@@ -66,12 +66,18 @@ On startup failure, sibling starts are cancelled and every successfully returned
 resource is released in reverse layers. A failed/cancelled start hook is responsible
 for cleaning up partially acquired resources that it never returned. Rollback runs
 under a shield so parent cancellation cannot skip it.
+An independently cancelled start hook also aborts startup and triggers rollback;
+task-group completion alone is never treated as successful resource acquisition.
 
 Shutdown also shields cleanup and attempts all stop hooks despite ordinary hook
 exceptions or deadlines. Failures are named `ComponentError` objects with the original
 cause and a `start`, `stop` or `close` phase, aggregated in exception groups.
 Application and cleanup failures are both preserved. A failed release is reported
 once; the manager drops its reference and does not retry non-idempotent cleanup.
+Cleanup also attempts the closer, remaining components and observers when a release
+hook independently raises cancellation or another `BaseException`. These failures
+retain their native type and are reported in a `BaseExceptionGroup` after cleanup;
+ordinary exceptions remain named `ComponentError` objects.
 
 Default deadlines are 30 seconds for start, 10 for stop, and 5 for health. For an
 `OwnedResource` with both a stop hook and closer, each receives its own stop deadline.
@@ -102,6 +108,8 @@ Hooks return `Health(healthy, detail)`. Missing probes report healthy while runn
 probe failures report the exception class without including secret-bearing messages.
 Non-running managers report unhealthy statuses. A health call holds the lifecycle
 lock, so release cannot destroy resources while their probes run.
+An independently cancelled probe cancels the health call rather than returning an
+incomplete report.
 
 Synchronous `observers=[callback]` receive `LifecycleEvent(component, phase, duration,
 error_type)` for start/stop. Observer failures are surfaced, and a startup observer

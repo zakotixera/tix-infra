@@ -103,6 +103,8 @@ the richer record. `may_trigger` runs upstream preparation/conditions without ch
 state or history and returns false for unavailable events. These callbacks can have
 application side effects, so it is not a pure availability query. Guard queries do
 not run managed completion hooks.
+Managed sync and async guard queries use the same ordered, short-circuit condition
+evaluation as dispatch: later conditions are skipped after a rejection.
 
 `states`, `get_state`, `is_state`, `get_triggers(*states)` and
 `get_transitions(trigger="*", source="*", dest="*")` expose inspection. Returned

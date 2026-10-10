@@ -79,6 +79,8 @@ leave the old snapshot intact. Reads take only a short publication lock, never t
 source-I/O lock. Equal data **and** equal provenance keep the old snapshot/version.
 `Reload.changes` contains leaf additions, removals and replacements; `MISSING`
 distinguishes absent values from null. Lists are treated as single diff values.
+Value comparison preserves scalar types recursively: changing `1` to `True` or
+`1.0`, including inside a list, publishes a new version and produces a diff.
 
 Subscribers run synchronously in registration order after publication, outside the
 read lock but inside reload serialization. All subscribers are attempted; failures
@@ -91,6 +93,8 @@ scalar values. Missing references and cycles fail reload. Provenance identifies 
 source that supplied a reference, rather than pretending its resolved value came
 directly from the referenced source. Overlay operates on the already resolved current
 snapshot; it does not reconstruct references lost during a previous reload.
+Reload and overlay share merging, interpolation, provenance and validation rules;
+fields expanded from a reference supplied by an overlay have origin `overlay`.
 
 ## Persistence and async applications
 

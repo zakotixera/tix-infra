@@ -13,7 +13,7 @@ from typing import Any
 
 from .merge import ListPolicy, deep_merge, resolve_references
 from .sources import ConfigSource
-from .values import Change, Snapshot, freeze, leaves, thaw
+from .values import MISSING, Change, Snapshot, equal, freeze, leaves, thaw
 
 
 class SourceError(RuntimeError):
@@ -92,33 +92,10 @@ class ConfigManager:
                     raise TypeError("source root must be a mapping")
             except Exception as error:
                 raise SourceError(f"failed to load source {source.name!r}") from error
-            before = leaves(data)
-            data = self._merge(data, incoming)
-            after, supplied = leaves(data), leaves(incoming)
-            origins = {
-                path: source.name
-                if path in supplied or before.get(path) != value
-                else origins.get(path, source.name)
-                for path, value in after.items()
-            }
-        if self._interpolate:
-            data = resolve_references(data)
-            origins = {
-                path: next(
-                    (
-                        origins[path[:length]]
-                        for length in range(len(path), 0, -1)
-                        if path[:length] in origins
-                    ),
-                    "interpolation",
-                )
-                for path in leaves(data)
-            }
+            data, origins = self._merge_layer(data, origins, incoming, source.name)
         previous = self.snapshot
-        candidate = Snapshot(data, previous.version + 1, origins)
-        for validator in self._validators:
-            validator(candidate)
-        if candidate.data == previous.data and candidate.origins == previous.origins:
+        candidate = self._candidate(data, origins, previous.version + 1)
+        if equal(candidate.data, previous.data) and candidate.origins == previous.origins:
             return Reload(previous, previous, ())
         result = Reload(previous, candidate, previous.diff(candidate))
         with self._read_lock:
@@ -134,21 +111,48 @@ class ConfigManager:
             raise ExceptionGroup("configuration published; subscribers failed", errors)
         return result
 
-    def overlay(self, values: Mapping[str, Any]) -> Snapshot:
-        """Validate an independent override snapshot without publishing it."""
-        current = self.snapshot
-        data = self._merge(current.data, freeze(values))
+    def _merge_layer(
+        self,
+        data: Mapping[str, Any],
+        origins: Mapping[tuple[str, ...], str],
+        incoming: Mapping[str, Any],
+        name: str,
+    ) -> tuple[Mapping[str, Any], dict[tuple[str, ...], str]]:
+        before, supplied = leaves(data), leaves(incoming)
+        merged = self._merge(data, incoming)
+        return merged, {
+            path: name
+            if path in supplied or not equal(before.get(path, MISSING), value)
+            else origins.get(path, name)
+            for path, value in leaves(merged).items()
+        }
+
+    def _candidate(
+        self, data: Mapping[str, Any], origins: Mapping[tuple[str, ...], str], version: int
+    ) -> Snapshot:
         if self._interpolate:
             data = resolve_references(data)
-        supplied = leaves(values)
-        origins = {
-            path: "overlay" if path in supplied else current.origins.get(path, "overlay")
-            for path in leaves(data)
-        }
-        candidate = Snapshot(data, current.version, origins)
+            origins = {
+                path: next(
+                    (
+                        origins[path[:length]]
+                        for length in range(len(path), 0, -1)
+                        if path[:length] in origins
+                    ),
+                    "interpolation",
+                )
+                for path in leaves(data)
+            }
+        candidate = Snapshot(data, version, origins)
         for validator in self._validators:
             validator(candidate)
         return candidate
+
+    def overlay(self, values: Mapping[str, Any]) -> Snapshot:
+        """Validate an independent override snapshot without publishing it."""
+        current = self.snapshot
+        data, origins = self._merge_layer(current.data, current.origins, freeze(values), "overlay")
+        return self._candidate(data, origins, current.version)
 
 
 def save_json(path: str | Path, data: Mapping[str, Any]) -> None:

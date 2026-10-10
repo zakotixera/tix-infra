@@ -226,3 +226,59 @@ def test_custom_merge_and_invalid_source_names():
         ConfigManager([MappingSource({}), MappingSource({})])
     with pytest.raises(TypeError):
         Snapshot({1: "bad"})
+
+
+@pytest.mark.parametrize("before,after", [(1, True), (False, 0), (1, 1.0)])
+@pytest.mark.parametrize("nested", [False, True])
+def test_scalar_type_changes_publish_notify_and_diff(before, after, nested):
+    def wrap(value):
+        return [{"value": value}] if nested else value
+
+    data = {"value": wrap(before)}
+    observed = []
+    manager = ConfigManager([MappingSource(data)])
+    manager.reload()
+    previous = manager.snapshot
+    manager.subscribe(observed.append)
+    data["value"] = wrap(after)
+    result = manager.reload()
+    assert result.changed and result.current.version == previous.version + 1
+    assert observed == [result]
+    assert len(result.changes) == 1
+    actual = result.current["value"][0]["value"] if nested else result.current["value"]
+    assert type(actual) is type(after)
+    assert not manager.reload().changed
+
+
+def test_overlay_and_reload_share_interpolation_and_origin_rules():
+    base = {"source": {"x": 2}, "copy": {"x": 1}, "unchanged": 3}
+    override = {"copy": "${source}", "fresh": "${source}"}
+    manager = ConfigManager([MappingSource(base, "base")], interpolate=True)
+    manager.reload()
+    original = manager.snapshot
+    overlay = manager.overlay(override)
+    layered = ConfigManager(
+        [MappingSource(base, "base"), MappingSource(override, "overlay")], interpolate=True
+    )
+    layered.reload()
+    assert overlay.data == layered.snapshot.data
+    assert overlay.origins == layered.snapshot.origins
+    assert overlay.origin("copy.x") == overlay.origin("fresh.x") == "overlay"
+    assert overlay.origin("source.x") == overlay.origin("unchanged") == "base"
+    assert manager.snapshot is original
+
+
+def test_custom_merge_type_changes_update_provenance_in_both_paths():
+    def merge(previous, incoming):
+        if "convert" in incoming:
+            return {**previous, "value": True}
+        return dict(incoming)
+
+    base = MappingSource({"value": 1}, "base")
+    manager = ConfigManager([base], merge=merge)
+    manager.reload()
+    preview = manager.overlay({"convert": True})
+    layered = ConfigManager([base, MappingSource({"convert": True}, "overlay")], merge=merge)
+    layered.reload()
+    assert preview.origins == layered.snapshot.origins == {("value",): "overlay"}
+    assert preview["value"] is layered.snapshot["value"] is True

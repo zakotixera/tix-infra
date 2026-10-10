@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
+from functools import partial
 from time import perf_counter
 from types import TracebackType
 from typing import Any
@@ -78,12 +79,12 @@ class LifecycleManager:
     def _context(self, component: Component) -> LifecycleContext:
         return LifecycleContext(self._resources, component.requires, self._shutdown, component.name)
 
-    def _notify(self, event: LifecycleEvent) -> list[Exception]:
-        errors: list[Exception] = []
+    def _notify(self, event: LifecycleEvent) -> list[BaseException]:
+        errors: list[BaseException] = []
         for observer in self._observers:
             try:
                 observer(event)
-            except Exception as error:
+            except BaseException as error:
                 errors.append(error)
         return errors
 
@@ -91,14 +92,26 @@ class LifecycleManager:
         self, components: tuple[Component, ...], operation: Callable[[Component], Awaitable[None]]
     ) -> None:
         pending = iter(components)
+        interruption: BaseException | None = None
 
         async def worker() -> None:
-            for component in pending:
-                await operation(component)
+            nonlocal interruption
+            try:
+                for component in pending:
+                    await operation(component)
+            except BaseException as error:
+                # Backends may suppress cancellation, including cancellation-only
+                # exception groups. Preserve the first interruption before joining.
+                if interruption is None:
+                    interruption = error
+                group.cancel_scope.cancel()
+                raise
 
         async with anyio.create_task_group() as group:
             for _ in range(min(self._concurrency, len(components))):
                 group.start_soon(worker)
+        if interruption is not None:
+            raise interruption
 
     async def _start_one(self, component: Component) -> None:
         token = _IN_HOOK.set(_IN_HOOK.get() | {id(self)})
@@ -155,28 +168,37 @@ class LifecycleManager:
                     ) from None
                 raise
 
-    async def _stop_one(self, component: Component) -> list[Exception]:
+    async def _release_hook(
+        self, component: Component, phase: str, operation: Callable[[], Awaitable[object]]
+    ) -> BaseException | None:
+        try:
+            with anyio.fail_after(component.stop_timeout, shield=True):
+                await operation()
+        except Exception as error:
+            failure = ComponentError(component.name, phase)
+            failure.__cause__ = error
+            return failure
+        except BaseException as error:
+            error.add_note(f"component {component.name!r} failed during {phase}")
+            return error
+        return None
+
+    async def _stop_one(self, component: Component) -> list[BaseException]:
         token = _IN_HOOK.set(_IN_HOOK.get() | {id(self)})
         started = perf_counter()
-        failures: list[Exception] = []
+        failures: list[BaseException] = []
         resource = self._resources[component.name]
         value = resource.value if isinstance(resource, OwnedResource) else resource
         try:
             if component.stop is not None:
-                try:
-                    with anyio.fail_after(component.stop_timeout):
-                        await component.stop(self._context(component), value)
-                except Exception as error:
-                    failure = ComponentError(component.name, "stop")
-                    failure.__cause__ = error
+                failure = await self._release_hook(
+                    component, "stop", partial(component.stop, self._context(component), value)
+                )
+                if failure is not None:
                     failures.append(failure)
             if isinstance(resource, OwnedResource):
-                try:
-                    with anyio.fail_after(component.stop_timeout):
-                        await resource.close()
-                except Exception as error:
-                    failure = ComponentError(component.name, "close")
-                    failure.__cause__ = error
+                failure = await self._release_hook(component, "close", resource.close)
+                if failure is not None:
                     failures.append(failure)
         finally:
             self._resources.pop(component.name, None)
@@ -187,7 +209,9 @@ class LifecycleManager:
                             component.name,
                             "stop",
                             perf_counter() - started,
-                            type(failures[0].__cause__).__name__ if failures else None,
+                            type(failures[0].__cause__ or failures[0]).__name__
+                            if failures
+                            else None,
                         )
                     )
                 )
@@ -195,13 +219,13 @@ class LifecycleManager:
                 _IN_HOOK.reset(token)
         return failures
 
-    async def _cleanup(self) -> list[Exception]:
-        errors: list[Exception] = []
+    async def _cleanup(self) -> list[BaseException]:
+        errors: list[BaseException] = []
         for layer in reversed(self._layers):
-            failures: dict[str, list[Exception]] = {}
+            failures: dict[str, list[BaseException]] = {}
 
             async def stop_one(
-                component: Component, failures: dict[str, list[Exception]] = failures
+                component: Component, failures: dict[str, list[BaseException]] = failures
             ) -> None:
                 failures[component.name] = await self._stop_one(component)
 
@@ -228,7 +252,7 @@ class LifecycleManager:
                     raise
                 self._state = LifecycleState.FAILED if errors else LifecycleState.STOPPED
                 if errors:
-                    raise ExceptionGroup("lifecycle shutdown failed", errors)
+                    raise BaseExceptionGroup("lifecycle shutdown failed", errors)
 
     async def health(self) -> dict[str, Health]:
         self._check_reentrant()

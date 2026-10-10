@@ -9,6 +9,8 @@ from typing import TypeVar
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
+from ._mapping import report_independent_cancellation
+
 T = TypeVar("T")
 U = TypeVar("U")
 
@@ -32,20 +34,23 @@ async def map_unordered(
     output_send, output_receive = anyio.create_memory_object_stream[U](buffer_size)
 
     async def produce() -> None:
-        async with input_send:
-            if isinstance(items, AsyncIterable):
-                async for item in items:
-                    await input_send.send(item)
-            else:
-                for item in items:
-                    await input_send.send(item)
+        with report_independent_cancellation():
+            async with input_send:
+                if isinstance(items, AsyncIterable):
+                    async for item in items:
+                        await input_send.send(item)
+                else:
+                    for item in items:
+                        await input_send.send(item)
 
     async def worker(source: MemoryObjectReceiveStream[T], sink: MemoryObjectSendStream[U]) -> None:
-        async with source, sink:
-            async for item in source:
-                await sink.send(await operation(item))
+        with report_independent_cancellation():
+            async with source, sink:
+                async for item in source:
+                    await sink.send(await operation(item))
 
     async with input_send, input_receive, output_send, output_receive:
+        consumer_error: BaseException | None = None
         async with anyio.create_task_group() as group:
             for _ in range(concurrency):
                 group.start_soon(worker, input_receive.clone(), output_send.clone())
@@ -54,5 +59,12 @@ async def map_unordered(
             group.start_soon(produce)
             try:
                 yield output_receive
+            except BaseException as error:
+                consumer_error = error
+                raise
             finally:
                 group.cancel_scope.cancel()
+        # Older AnyIO versions can suppress native caller cancellation after our
+        # explicit group cancellation. Consumer failure must still escape after join.
+        if consumer_error is not None:
+            raise consumer_error

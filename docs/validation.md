@@ -1,5 +1,39 @@
 # Validation record
 
+## Review fixes — macOS, 2026-10-10
+
+| Check | Result |
+| --- | --- |
+| Workspace tests, CPython 3.13.11, AnyIO 4.15.1, transitions 0.9.3 | 213 passed |
+| Installed-wheel tests, CPython 3.11.15, AnyIO 4.4.0, transitions 0.9.2 | 213 passed |
+| Workspace line coverage across four packages | 97.87% (1,643 statements) |
+| Ruff lint and format checks | Passed |
+| Strict mypy checks | Passed, 25 source files |
+| Source distributions, wheels and independent wheel installations | All four passed |
+| Composition and upstream API examples | Passed |
+
+Added 68 regression cases covering independently cancelled startup, exhaustive
+release and rollback, health cancellation, mapping operations and iterators,
+cancellation-only and mixed exception groups, ambient cancellation, scalar type
+changes, overlay provenance, and sync/async guard-query parity. AnyIO tests exercise
+both asyncio and Trio; cancelled asyncio Future cases run on asyncio explicitly.
+
+Native asyncio regressions cover `timeout`, `wait_for` and `Task.cancel` for both
+mapping APIs, with zero and buffered input capacity. They verify exception types,
+task cancellation state and worker cleanup; separate cases verify independently
+self-cancelled workers still fail the mapping. Ordered mapping now produces inputs
+in an owned child task, keeping the caller outside cancellation conversion. Streaming
+exit also preserves consumer cancellation when older AnyIO versions suppress it
+during explicit task-group shutdown.
+
+Review caught an additional Trio cancellation-only exception-group case after the
+first fixes. Lifecycle orchestration now retains suppressed interruptions, and the
+mapping cancellation boundary handles nested cancellation groups. The final source
+and newly rebuilt minimum-dependency wheels pass the complete suite. This run does
+not replace the Windows/Linux and Python 3.12/3.14 CI matrix.
+
+## Initial implementation — Windows, 2026-10-04
+
 Local validation completed on Windows 11, 2026-10-04.
 
 | Check | Result |

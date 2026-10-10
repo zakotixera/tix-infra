@@ -10,6 +10,7 @@ from typing import Any, Literal, TypeVar, cast
 import anyio
 from anyio.abc import TaskGroup, TaskStatus
 
+from ._mapping import report_independent_cancellation
 from .handles import Readiness, TaskCancelled, TaskHandle, TaskStatistics
 
 T = TypeVar("T")
@@ -252,18 +253,28 @@ async def map_concurrent(
     if concurrency < 1 or buffer_size < 0:
         raise ValueError("concurrency must be positive and buffer_size nonnegative")
     send, receive = anyio.create_memory_object_stream[tuple[int, T]](buffer_size)
-    results: list[U | None] = []
+    pending = object()
+    results: list[object] = []
 
     async def worker() -> None:
-        async with receive.clone() as stream:
-            async for index, item in stream:
-                results[index] = await operation(item)
+        with report_independent_cancellation():
+            async with receive.clone() as stream:
+                async for index, item in stream:
+                    results[index] = await operation(item)
+
+    async def produce() -> None:
+        with report_independent_cancellation():
+            async with send:
+                for index, item in enumerate(items):
+                    results.append(pending)
+                    await send.send((index, item))
 
     async with send, receive, anyio.create_task_group() as group:
         for _ in range(concurrency):
             group.start_soon(worker)
-        async with send:
-            for index, item in enumerate(items):
-                results.append(None)
-                await send.send((index, item))
+        # Keep cancellation conversion in children. Native asyncio cancellation of
+        # the caller is handled by the task group, not an AnyIO deadline heuristic.
+        group.start_soon(produce)
+    if any(value is pending for value in results):
+        raise TaskCancelled("mapping ended before every result was produced")
     return cast(list[U], results)

@@ -45,6 +45,19 @@ def thaw(value: Any) -> Any:
     return value
 
 
+def equal(left: Any, right: Any) -> bool:
+    """Compare config values, normalizing containers but preserving scalar types."""
+    if left is right:
+        return True
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        return left.keys() == right.keys() and all(equal(left[key], right[key]) for key in left)
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        return len(left) == len(right) and all(
+            equal(a, b) for a, b in zip(left, right, strict=True)
+        )
+    return type(left) is type(right) and bool(left == right)
+
+
 def parts(path: Path) -> tuple[str, ...]:
     return tuple(path.split(".")) if isinstance(path, str) else path
 
@@ -120,7 +133,7 @@ class Snapshot(Mapping[str, Any]):
         return tuple(
             Change(path, before.get(path, MISSING), after.get(path, MISSING))
             for path in sorted(before.keys() | after.keys())
-            if before.get(path, MISSING) != after.get(path, MISSING)
+            if not equal(before.get(path, MISSING), after.get(path, MISSING))
         )
 
     def to_dict(

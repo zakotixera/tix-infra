@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from transitions import Machine
-from transitions.extensions.asyncio import AsyncMachine, AsyncTransition
+from transitions.extensions.asyncio import AsyncEventData, AsyncMachine, AsyncTransition
 
 from .callbacks import adapt_event, invoke_async, invoke_sync
 from .definition import Callback, MachineDefinition
@@ -24,6 +24,22 @@ class _SerialAsyncTransition(AsyncTransition):
 
 class _SerialAsyncMachine(AsyncMachine):
     transition_cls = _SerialAsyncTransition
+
+    async def _can_trigger(self, model: Any, trigger: str, *args: Any, **kwargs: Any) -> bool:
+        # Managed definitions are validated flat machines without native error hooks.
+        # Use the execution path's short-circuit evaluator for queries as well.
+        event = self.events.get(trigger)
+        if event is None:
+            return False
+        state = self.get_model_state(model)
+        data = AsyncEventData(state, event, self, model, args, kwargs)
+        for transition in event.transitions.get(state.name, ()):
+            data.transition = transition
+            await self.callbacks(self.prepare_event, data)
+            await self.callbacks(transition.prepare, data)
+            if await transition._eval_conditions(data):
+                return True
+        return False
 
     @staticmethod
     async def await_all(callables: Iterable[Callable[[], Awaitable[Any]]]) -> list[Any]:
